@@ -22,7 +22,7 @@ var pages: Dictionary = {}
 
 # garden page
 var coins_label: Label
-var garden_rows: VBoxContainer
+var harvest_button: Button
 var plant_buttons: Dictionary = {}
 var plot_price_label: Label
 
@@ -42,6 +42,7 @@ var status_label: Label
 var status_tween: Tween
 var press_button: Button
 var interactive := true  # false saat selftest, supaya _process tidak jalan
+var plot_bars: VBoxContainer  # progress bar tanaman di garden page
 
 
 func _ready() -> void:
@@ -191,6 +192,8 @@ func _make_tab(text: String) -> Button:
 	hover.content_margin_right = 16.0
 	b.add_theme_stylebox_override("hover", hover)
 	var pressed := _box(COL_ACCENT, 10)
+	pressed.border_color = COL_ACCENT_HOVER
+	pressed.set_border_width_all(2)
 	pressed.content_margin_left = 16.0
 	pressed.content_margin_right = 16.0
 	b.add_theme_stylebox_override("pressed", pressed)
@@ -201,6 +204,10 @@ func _make_tab(text: String) -> Button:
 func _show_page(page: String) -> void:
 	for k in pages.keys():
 		pages[k].visible = (k == page)
+	# sinkronkan toggle tab dengan halaman aktif
+	tab_garden.button_pressed = page == "garden"
+	tab_shop.button_pressed = page == "shop"
+	tab_processing.button_pressed = page == "processing"
 
 
 func _build_garden_page() -> Control:
@@ -248,11 +255,13 @@ func _build_garden_page() -> Control:
 	vbox.add_child(plot_price_label)
 
 	var harvest := Button.new()
-	harvest.text = "Harvest ready plants"
+	harvest.text = "Nothing ready to harvest"
 	harvest.add_theme_font_size_override("font_size", 15)
 	_style_action_button(harvest)
 	harvest.pressed.connect(_on_harvest)
+	harvest.disabled = true
 	vbox.add_child(harvest)
+	harvest_button = harvest
 
 	vbox.add_child(_spacer(10))
 	var gh := Label.new()
@@ -261,9 +270,10 @@ func _build_garden_page() -> Control:
 	gh.add_theme_color_override("font_color", COL_MUTED)
 	vbox.add_child(gh)
 
-	garden_rows = VBoxContainer.new()
-	garden_rows.add_theme_constant_override("separation", 6)
-	vbox.add_child(garden_rows)
+	plot_bars = VBoxContainer.new()
+	plot_bars.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	plot_bars.add_theme_constant_override("separation", 6)
+	vbox.add_child(plot_bars)
 
 	return scroll
 
@@ -312,7 +322,18 @@ func _build_shop_page() -> Control:
 	serve_button = Button.new()
 	serve_button.text = "Serve"
 	serve_button.add_theme_font_size_override("font_size", 15)
-	_style_action_button(serve_button)
+	serve_button.add_theme_color_override("font_color", Color("1a120c"))
+	serve_button.add_theme_color_override("font_hover_color", Color("1a120c"))
+	serve_button.add_theme_color_override("font_pressed_color", Color("1a120c"))
+	serve_button.add_theme_color_override("font_hover_pressed_color", Color("1a120c"))
+	serve_button.add_theme_color_override("font_disabled_color", COL_MUTED)
+	serve_button.add_theme_stylebox_override("normal", _box(COL_ACCENT, 10))
+	serve_button.add_theme_stylebox_override("hover", _box(COL_ACCENT_HOVER, 10))
+	var serve_pressed := _box(COL_ACCENT_PRESS, 10)
+	serve_button.add_theme_stylebox_override("pressed", serve_pressed)
+	serve_button.add_theme_stylebox_override("hover_pressed", serve_pressed)
+	var serve_disabled := _box(COL_SURFACE_2, 10)
+	serve_button.add_theme_stylebox_override("disabled", serve_disabled)
 	serve_button.pressed.connect(_on_serve)
 	serve_row.add_child(serve_button)
 
@@ -388,27 +409,61 @@ func _build_processing_page() -> Control:
 # ============ REFRESH ============
 
 func _refresh() -> void:
-	coins_label.text = "%d coins  ·  Level %d kedai" % [int(Game.coins), Game.shop_level]
+	var plural := "" if Game.plots.size() == 1 else "s"
+	coins_label.text = "%d coins  ·  Shop level %d" % [int(Game.coins), Game.shop_level]
 
 	# garden
 	for pid in plant_buttons.keys():
 		plant_buttons[pid].disabled = Game.coins < Game.plant_price()
-	plot_price_label.text = "Next plot: %d coins  ·  %d plot(s) planted" % [
-		int(Game.plant_price()), Game.plots.size(),
+	plot_price_label.text = "Next plot: %d coins  ·  %d plot%s planted" % [
+		int(Game.plant_price()), Game.plots.size(), plural,
 	]
-	_clear_children(garden_rows)
+	var ready := Game.ready_plots()
+	harvest_button.disabled = ready == 0
+	if ready == 0:
+		harvest_button.text = "Nothing ready to harvest"
+	else:
+		harvest_button.text = "Harvest %d plant%s" % [ready, "" if ready == 1 else "s"]
+
+	_clear_children(plot_bars)
 	if Game.plots.is_empty():
-		garden_rows.add_child(_muted_row("Nothing planted yet."))
+		var empty := _muted_row("Nothing planted yet. Pick a tea above to start.")
+		plot_bars.add_child(empty)
 	for p in Game.plots:
 		var info: Dictionary = Game.TEA_PLANTS[p["plant"]]
-		var left: float = maxf(0.0, float(p["ready_at"]) - Game._now())
-		var txt: String
+		var now: float = Game._now()
+		var total: float = float(info["grow_seconds"])
+		var left: float = maxf(0.0, float(p["ready_at"]) - now)
+		var frac: float = clampf(1.0 - left / total, 0.0, 1.0)
+		var row := VBoxContainer.new()
+		row.add_theme_constant_override("separation", 2)
+		var lbl := Label.new()
+		lbl.add_theme_font_size_override("font_size", 14)
 		if left <= 0.0:
-			txt = "%s  ·  READY, +%d leaves" % [info["name"], int(info["yield"])]
-			garden_rows.add_child(_colored_row(txt, COL_SUCCESS))
+			lbl.text = "%s  ·  READY, +%d leaves" % [info["name"], int(info["yield"])]
+			lbl.add_theme_color_override("font_color", COL_ACCENT)
 		else:
-			txt = "%s  ·  %d:%02d remaining" % [info["name"], int(left) / 60, int(left) % 60]
-			garden_rows.add_child(_muted_row(txt))
+			lbl.text = "%s  ·  %d:%02d remaining" % [
+				info["name"], int(left) / 60, int(left) % 60,
+			]
+			lbl.add_theme_color_override("font_color", COL_MUTED)
+		row.add_child(lbl)
+		var bar := ProgressBar.new()
+		bar.min_value = 0.0
+		bar.max_value = 1.0
+		bar.value = frac
+		bar.show_percentage = false
+		bar.custom_minimum_size = Vector2(0, 10)
+		var bg_style := StyleBoxFlat.new()
+		bg_style.bg_color = COL_SURFACE
+		bg_style.set_corner_radius_all(5)
+		var fill_style := StyleBoxFlat.new()
+		fill_style.bg_color = COL_ACCENT if left <= 0.0 else Color("b08954")
+		fill_style.set_corner_radius_all(5)
+		bar.add_theme_stylebox_override("background", bg_style)
+		bar.add_theme_stylebox_override("fill", fill_style)
+		row.add_child(bar)
+		plot_bars.add_child(row)
 
 	# shop
 	if Game.customer.is_empty():
@@ -502,12 +557,6 @@ func _muted_row(text: String) -> Label:
 	l.text = text
 	l.add_theme_font_size_override("font_size", 14)
 	l.add_theme_color_override("font_color", COL_MUTED)
-	return l
-
-
-func _colored_row(text: String, color: Color) -> Label:
-	var l := _muted_row(text)
-	l.add_theme_color_override("font_color", color)
 	return l
 
 
@@ -733,13 +782,14 @@ func _run_screenshot() -> void:
 		"name": "Nyonya Lian", "product": "green_tea",
 		"reward": 6.0, "xp": 1, "patience": 28.0,
 	}
-	await get_tree().process_frame
-	await get_tree().process_frame
-	_show_page("garden")
-	_refresh()
-	await get_tree().process_frame
-	var img := get_viewport().get_texture().get_image()
-	var out := ProjectSettings.globalize_path("user://screenshot.png")
-	img.save_png(out)
-	print("SCREENSHOT_SAVED: " + out)
+	var out_dir := ProjectSettings.globalize_path("user://")
+	for entry in [["garden", "garden"], ["shop", "shop"], ["processing", "processing"]]:
+		_show_page(entry[0])
+		_refresh()
+		await get_tree().process_frame
+		await get_tree().process_frame
+		var img := get_viewport().get_texture().get_image()
+		var out: String = out_dir + "screenshot_" + str(entry[1]) + ".png"
+		img.save_png(out)
+		print("SCREENSHOT_SAVED: " + out)
 	get_tree().quit()
