@@ -61,6 +61,21 @@ const XP_LEVELS := [0, 30, 80, 160]  # xp total minimum per level kedai
 # Durasi satu langkah stasiun (detik) untuk semua produk di M0.
 const STEP_SECONDS := 10.0
 
+# --- Pasar & aging pu-erh (hook utama, lihat GAME.md) ---
+# Harga dasar kue pu-erh sebelum multiplier.
+const PUER_BASE_PRICE := 40.0
+# Tier aging berbasis WAKTU RIIL (detik), berlaku juga saat game mati.
+const AGE_TIERS := [
+	{"name": "Fresh", "seconds": 0.0, "mult": 1.0},
+	{"name": "Aged", "seconds": 259200.0, "mult": 2.0},       # 3 hari
+	{"name": "Reserve", "seconds": 604800.0, "mult": 4.0},    # 7 hari
+	{"name": "Vintage", "seconds": 2592000.0, "mult": 12.0},  # 30 hari
+	{"name": "Ancestral", "seconds": 8640000.0, "mult": 40.0}, # 100 hari
+]
+# Kisaran multiplier pasar.
+const MARKET_MIN := 0.5
+const MARKET_MAX := 1.7
+
 # --- Data statis: pelanggan ---
 const CUSTOMER_NAMES := [
 	"Mira", "Tomas", "Aiko", "Bram", "Selin", "Oren", "Yuki", "Pak Darma",
@@ -83,7 +98,7 @@ var batch_counter: int = 0
 
 var stock := {}                  # product_id -> jumlah siap saji
 var aging := []                  # [{ready_at}] kue pu-erh yang sedang mengering
-var press_queue := []            # [{ready_at}] pressing di aging rack
+var vintage := []                # [{finished_at}] kue kering, menua real-time
 
 var customer: Dictionary = {}    # pelanggan aktif {name, product, reward, xp}
 var customer_cooldown: float = 0.0
@@ -281,13 +296,87 @@ func collect_cakes() -> int:
 	for c in aging:
 		if now >= float(c["ready_at"]):
 			got += 1
-			stock["puer_cake"] = int(stock.get("puer_cake", 0)) + 1
+			vintage.append({"finished_at": now})
 		else:
 			remaining.append(c)
 	aging = remaining
 	if got > 0:
 		stock_changed.emit()
 	return got
+
+
+# ============ PASAR & AGING PU-ERH ============
+
+## Multiplier pasar deterministik dari jam unix: sama untuk semua pemain,
+## berputar mulus tanpa save state, tetap benar setelah game mati berhari-hari.
+func market_mult() -> float:
+	return market_mult_at(_now())
+
+
+## Arah pasar: bandingkan multiplier sekarang vs satu jam lalu.
+func market_direction() -> String:
+	var m_now: float = market_mult()
+	var m_prev: float = market_mult_at(_now() - 3600.0)
+	if m_now > m_prev * 1.03:
+		return "rising"
+	elif m_now < m_prev * 0.97:
+		return "falling"
+	return "steady"
+
+
+func market_mult_at(unix_seconds: float) -> float:
+	var hours: float = unix_seconds / 3600.0
+	var wave: float = (
+		0.35 * sin(hours * 0.26)
+		+ 0.22 * sin(hours * 0.83 + 1.7)
+		+ 0.13 * sin(hours * 2.1 + 4.2)
+	)
+	var t: float = (wave + 0.7) / 1.4
+	return MARKET_MIN + t * (MARKET_MAX - MARKET_MIN)
+
+
+func age_info(age_seconds: float) -> Dictionary:
+	var idx := 0
+	for i in AGE_TIERS.size():
+		if age_seconds >= float(AGE_TIERS[i]["seconds"]):
+			idx = i
+	var tier: Dictionary = AGE_TIERS[idx]
+	var out := {
+		"tier_index": idx,
+		"tier_name": tier["name"],
+		"mult": float(tier["mult"]),
+		"next_seconds": -1.0,
+		"next_mult": 0.0,
+	}
+	if idx + 1 < AGE_TIERS.size():
+		out["next_seconds"] = float(AGE_TIERS[idx + 1]["seconds"])
+		out["next_mult"] = float(AGE_TIERS[idx + 1]["mult"])
+	return out
+
+
+func cake_age_seconds(finished_at: float) -> float:
+	return maxf(0.0, _now() - finished_at)
+
+
+func puer_price(finished_at: float) -> float:
+	var info := age_info(cake_age_seconds(finished_at))
+	return PUER_BASE_PRICE * float(info["mult"]) * market_mult()
+
+
+func vintage_count() -> int:
+	return vintage.size()
+
+
+func sell_cake(index: int) -> bool:
+	if index < 0 or index >= vintage.size():
+		return false
+	var cake: Dictionary = vintage[index]
+	var price := puer_price(float(cake["finished_at"]))
+	coins += price
+	stats_earned += price
+	vintage.remove_at(index)
+	coins_changed.emit()
+	return true
 
 
 # ============ PENYAJIAN ============
@@ -351,6 +440,7 @@ func reset() -> void:
 		station_queues[st] = []
 	stock = {}
 	aging = []
+	vintage = []
 	customer = {}
 	customer_cooldown = 0.0
 	stats_served = 0
@@ -363,7 +453,8 @@ func save() -> void:
 		"coins": coins, "xp": xp, "shop_level": shop_level,
 		"raw_leaves": raw_leaves, "plots": plots,
 		"plot_price": plot_price, "station_counts": station_counts,
-		"stock": stock, "aging": aging, "stats_served": stats_served,
+		"stock": stock, "aging": aging, "vintage": vintage,
+		"stats_served": stats_served,
 		"stats_earned": stats_earned,
 	}
 	var f := FileAccess.open(SAVE_PATH, FileAccess.WRITE)
@@ -396,5 +487,6 @@ func load_save() -> void:
 			station_counts[k] = int(sc[k])
 	stock = parsed.get("stock", {})
 	aging = parsed.get("aging", [])
+	vintage = parsed.get("vintage", [])
 	stats_served = int(parsed.get("stats_served", 0))
 	stats_earned = float(parsed.get("stats_earned", 0.0))

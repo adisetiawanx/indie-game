@@ -18,6 +18,7 @@ const COL_SUCCESS := Color("8fbc6f")
 var tab_garden: Button
 var tab_shop: Button
 var tab_processing: Button
+var tab_market: Button
 var pages: Dictionary = {}
 
 # garden page
@@ -37,6 +38,11 @@ var serve_button: Button
 var leaves_label: Label
 var product_rows: VBoxContainer
 var station_rows: VBoxContainer
+
+# market page
+var market_label: Label
+var market_hint: Label
+var vintage_rows: VBoxContainer
 
 var status_label: Label
 var status_tween: Tween
@@ -149,11 +155,13 @@ func _build_ui() -> void:
 	tab_garden = _make_tab("Garden")
 	tab_shop = _make_tab("Shop")
 	tab_processing = _make_tab("Processing")
-	for b in [tab_garden, tab_shop, tab_processing]:
+	tab_market = _make_tab("Market")
+	for b in [tab_garden, tab_shop, tab_processing, tab_market]:
 		tabbar.add_child(b)
 	tab_garden.pressed.connect(func(): _show_page("garden"))
 	tab_shop.pressed.connect(func(): _show_page("shop"))
 	tab_processing.pressed.connect(func(): _show_page("processing"))
+	tab_market.pressed.connect(func(): _show_page("market"))
 
 	# --- halaman ---
 	var page_holder := MarginContainer.new()
@@ -167,6 +175,7 @@ func _build_ui() -> void:
 	pages["garden"] = _build_garden_page()
 	pages["shop"] = _build_shop_page()
 	pages["processing"] = _build_processing_page()
+	pages["market"] = _build_market_page()
 	for k in pages.keys():
 		page_holder.add_child(pages[k])
 		pages[k].visible = false
@@ -234,8 +243,11 @@ func _show_page(page: String) -> void:
 	tab_garden.button_pressed = page == "garden"
 	tab_shop.button_pressed = page == "shop"
 	tab_processing.button_pressed = page == "processing"
-	# ganti latar sesuai halaman
+	tab_market.button_pressed = page == "market"
+	# ganti latar sesuai halaman (market pakai latar banner lembah teh)
 	var tex_path := "res://assets/bg_%s.webp" % page
+	if page == "market":
+		tex_path = "res://assets/banner.webp"
 	if ResourceLoader.exists(tex_path):
 		bg_texture.texture = load(tex_path)
 	else:
@@ -438,6 +450,59 @@ func _build_processing_page() -> Control:
 	return _page_backing(scroll)
 
 
+func _build_market_page() -> Control:
+	var scroll := ScrollContainer.new()
+	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	var vbox := VBoxContainer.new()
+	vbox.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	vbox.add_theme_constant_override("separation", 10)
+	scroll.add_child(vbox)
+
+	var h := Label.new()
+	h.text = "Tea Market"
+	h.add_theme_font_size_override("font_size", 26)
+	h.add_theme_color_override("font_color", COL_TEXT)
+	vbox.add_child(h)
+
+	# status pasar live
+	var market_panel := PanelContainer.new()
+	var mp_style := _box(COL_SURFACE, 12)
+	mp_style.content_margin_left = 18.0
+	mp_style.content_margin_right = 18.0
+	mp_style.content_margin_top = 12.0
+	mp_style.content_margin_bottom = 12.0
+	market_panel.add_theme_stylebox_override("panel", mp_style)
+	vbox.add_child(market_panel)
+	var mp_v := VBoxContainer.new()
+	mp_v.add_theme_constant_override("separation", 4)
+	market_panel.add_child(mp_v)
+
+	market_label = Label.new()
+	market_label.add_theme_font_size_override("font_size", 15)
+	market_label.add_theme_color_override("font_color", COL_TEXT)
+	mp_v.add_child(market_label)
+
+	market_hint = Label.new()
+	market_hint.add_theme_font_size_override("font_size", 13)
+	market_hint.add_theme_color_override("font_color", COL_MUTED)
+	market_hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	mp_v.add_child(market_hint)
+
+	vbox.add_child(_spacer(8))
+
+	var vh := Label.new()
+	vh.text = "Your cakes"
+	vh.add_theme_font_size_override("font_size", 15)
+	vh.add_theme_color_override("font_color", COL_MUTED)
+	vbox.add_child(vh)
+
+	vintage_rows = VBoxContainer.new()
+	vintage_rows.add_theme_constant_override("separation", 8)
+	vbox.add_child(vintage_rows)
+
+	return _page_backing(scroll)
+
+
 # ============ REFRESH ============
 
 func _refresh() -> void:
@@ -513,6 +578,8 @@ func _refresh() -> void:
 	_clear_children(stock_rows)
 	var any_stock := false
 	for pid in Game.unlocked_products():
+		if pid == "puer_cake":
+			continue  # kue pu-erh dijual lewat halaman Market, bukan kedai
 		var n: int = int(Game.stock.get(pid, 0))
 		any_stock = any_stock or n > 0
 		var row_text := "%s  ·  %d ready" % [Game.TEA_PRODUCTS[pid]["name"], n]
@@ -585,6 +652,87 @@ func _refresh() -> void:
 		row.add_child(buy)
 		station_rows.add_child(row)
 
+	# market
+	var m_mult: float = Game.market_mult()
+	var m_dir: String = Game.market_direction()
+	var dir_icon := "="
+	var dir_color := COL_MUTED
+	if m_dir == "rising":
+		dir_icon = "▲"
+		dir_color = COL_SUCCESS
+	elif m_dir == "falling":
+		dir_icon = "▼"
+		dir_color = COL_ACCENT
+	market_label.text = "Market %s %dx  ·  base cake %d coins" % [
+		dir_icon, snappedf(m_mult, 0.01), int(Game.PUER_BASE_PRICE),
+	]
+	market_label.add_theme_color_override("font_color", dir_color)
+	market_hint.text = (
+		"Cakes age in real time, even while the game is closed. "
+		+ "Sell at a high tide or hold for the next age tier. "
+		+ "Fresh cakes sell for less than the cost of making them, "
+		+ "aged cakes are where the real money is."
+	)
+
+	_clear_children(vintage_rows)
+	if Game.vintage.is_empty():
+		var vempty := _muted_row(
+			"No cakes yet. Press a Pu-erh cake in Processing, dry it, then it lands here to age."
+		)
+		vintage_rows.add_child(vempty)
+	for i in Game.vintage.size():
+		var cake: Dictionary = Game.vintage[i]
+		var finished_at: float = float(cake["finished_at"])
+		var age_sec := Game.cake_age_seconds(finished_at)
+		var info: Dictionary = Game.age_info(age_sec)
+		var price := Game.puer_price(finished_at)
+		var row2 := HBoxContainer.new()
+		row2.add_theme_constant_override("separation", 10)
+		var vlbl := Label.new()
+		vlbl.add_theme_font_size_override("font_size", 14)
+		var age_txt := _human_age(age_sec)
+		var next_txt := ""
+		if float(info["next_seconds"]) >= 0.0:
+			var remain: float = float(info["next_seconds"]) - age_sec
+			next_txt = "  ·  next tier in %s (x%s)" % [
+				_human_age(remain), _fmt_mult(float(info["next_mult"])),
+			]
+		vlbl.text = "Pu-erh Cake  ·  %s (x%s)  ·  sells %d coins%s" % [
+			info["tier_name"], _fmt_mult(float(info["mult"])), int(price), next_txt,
+		]
+		var is_fresh: bool = int(info["tier_index"]) == 0
+		vlbl.add_theme_color_override(
+			"font_color", COL_MUTED if is_fresh else COL_ACCENT
+		)
+		row2.add_child(vlbl)
+		var spacer3 := Control.new()
+		spacer3.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		row2.add_child(spacer3)
+		var sell := Button.new()
+		sell.text = "Sell  ·  %d" % int(price)
+		sell.add_theme_font_size_override("font_size", 13)
+		sell.pressed.connect(_on_sell_cake.bind(i))
+		row2.add_child(sell)
+		vintage_rows.add_child(row2)
+
+
+func _human_age(seconds: float) -> String:
+	if seconds < 90.0:
+		return "%ds" % int(seconds)
+	if seconds < 5400.0:
+		return "%dm" % int(round(seconds / 60.0))
+	if seconds < 129600.0:
+		return "%dh" % int(round(seconds / 3600.0))
+	return "%dd" % int(round(seconds / 86400.0))
+
+
+func _fmt_mult(m: float) -> String:
+	# tampilkan tanpa nol menggantung: 2 -> "2", 2.5 -> "2.5", 1.25 -> "1.25"
+	var rounded: float = snappedf(m, 0.01)
+	if absf(rounded - roundf(rounded)) < 0.005:
+		return str(int(roundf(rounded)))
+	return str(rounded).pad_decimals(2).rstrip("0").rstrip(".")
+
 
 func _clear_children(node: Node) -> void:
 	for c in node.get_children():
@@ -627,6 +775,14 @@ func _on_press_cake() -> void:
 func _on_buy_station(st: String) -> void:
 	if Game.buy_station(st):
 		_flash("%s added." % Game.STATIONS[st]["name"])
+
+
+func _on_sell_cake(index: int) -> void:
+	if index >= Game.vintage.size():
+		return
+	var price := Game.puer_price(float(Game.vintage[index]["finished_at"]))
+	if Game.sell_cake(index):
+		_flash("Cake sold for %d coins." % int(price))
 
 
 func _on_serve() -> void:
@@ -765,9 +921,35 @@ func _run_selftest() -> void:
 	if Game.aging.size() > 0:
 		Game.aging[0]["ready_at"] = Game._now() - 1.0
 		fails += _check(Game.collect_cakes() == 1, "cake collected after drying")
+		fails += _check(Game.vintage.size() == 1, "dried cake enters vintage shelf")
 	else:
-		fails += 1
-	fails += _check(int(Game.stock.get("puer_cake", 0)) == 1, "puer cake in stock")
+		fails += 2
+
+	# --- pasar & aging (hook utama) ---
+	var mm: float = Game.market_mult()
+	fails += _check(mm >= Game.MARKET_MIN and mm <= Game.MARKET_MAX, "market mult within bounds")
+	fails += _check(absf(Game.market_mult_at(1757000000.0) - Game.market_mult_at(1757000000.0)) < 1e-9,
+		"market price deterministic at fixed time")
+	var info0: Dictionary = Game.age_info(0.0)
+	fails += _check(info0["tier_name"] == "Fresh" and absf(float(info0["mult"]) - 1.0) < 0.01,
+		"fresh cake is tier 0 x1")
+	var info3d: Dictionary = Game.age_info(259200.0 + 1.0)
+	fails += _check(info3d["tier_name"] == "Aged" and absf(float(info3d["mult"]) - 2.0) < 0.01,
+		"3-day-old cake is Aged x2")
+	var fresh_price: float = Game.puer_price(Game._now())
+	fails += _check(fresh_price > 0.0, "puer price computes positive")
+	# simulasi kue tua: finished_at dimundurkan 8 hari -> tier Reserve x4
+	var old_finished: float = Game._now() - (604800.0 + 3600.0)
+	var old_info: Dictionary = Game.age_info(Game.cake_age_seconds(old_finished))
+	fails += _check(old_info["tier_name"] == "Reserve" and absf(float(old_info["mult"]) - 4.0) < 0.01,
+		"8-day-old cake is Reserve x4")
+	fails += _check(Game.puer_price(old_finished) > fresh_price * 3.0,
+		"aged cake worth far more than fresh")
+	fails += _check(not Game.sell_cake(99), "selling invalid index rejected")
+	var coins_pre_sell: float = Game.coins
+	fails += _check(Game.sell_cake(0), "sell cake succeeds")
+	fails += _check(Game.coins > coins_pre_sell, "selling credits coins")
+	fails += _check(Game.vintage.is_empty(), "vintage empty after selling")
 
 	# --- pelanggan ---
 	Game.stock = {"green_tea": 2}  # stok tunggal biar pilihan pelanggan deterministik
@@ -821,8 +1003,13 @@ func _run_screenshot() -> void:
 		"name": "Nyonya Lian", "product": "green_tea",
 		"reward": 6.0, "xp": 1, "patience": 28.0,
 	}
+	# kue contoh: satu fresh, satu berumur 8 hari (Reserve)
+	Game.vintage = [
+		{"finished_at": Game._now() - 120.0},
+		{"finished_at": Game._now() - (604800.0 + 3600.0)},
+	]
 	var out_dir := ProjectSettings.globalize_path("user://")
-	for entry in [["garden", "garden"], ["shop", "shop"], ["processing", "processing"]]:
+	for entry in [["garden", "garden"], ["shop", "shop"], ["processing", "processing"], ["market", "market"]]:
 		_show_page(entry[0])
 		_refresh()
 		await get_tree().process_frame
