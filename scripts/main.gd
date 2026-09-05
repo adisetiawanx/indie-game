@@ -43,6 +43,7 @@ var status_tween: Tween
 var press_button: Button
 var interactive := true  # false saat selftest, supaya _process tidak jalan
 var plot_bars: VBoxContainer  # progress bar tanaman di garden page
+var bg_texture: TextureRect  # ilustrasi latar per halaman
 
 
 func _ready() -> void:
@@ -91,6 +92,15 @@ func _build_ui() -> void:
 	bg.color = COL_BG
 	bg.set_anchors_preset(Control.PRESET_FULL_RECT)
 	add_child(bg)
+
+	# ilustrasi latar storybook (fallback: tetap warna polos kalau aset absen)
+	bg_texture = TextureRect.new()
+	bg_texture.set_anchors_preset(Control.PRESET_FULL_RECT)
+	bg_texture.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	bg_texture.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_COVERED
+	bg_texture.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	bg_texture.modulate = Color(1, 1, 1, 0.9)
+	add_child(bg_texture)
 
 	var root := VBoxContainer.new()
 	root.set_anchors_preset(Control.PRESET_FULL_RECT)
@@ -201,6 +211,22 @@ func _make_tab(text: String) -> Button:
 	return b
 
 
+func _page_backing(inner: Control) -> Control:
+	# Panel semi-transparan di belakang konten halaman supaya teks tetap
+	# terbaca di atas ilustrasi latar.
+	var panel := PanelContainer.new()
+	var style := StyleBoxFlat.new()
+	style.bg_color = Color(0.07, 0.066, 0.06, 0.72)
+	style.set_corner_radius_all(14)
+	style.content_margin_left = 14.0
+	style.content_margin_right = 14.0
+	style.content_margin_top = 12.0
+	style.content_margin_bottom = 12.0
+	panel.add_theme_stylebox_override("panel", style)
+	panel.add_child(inner)
+	return panel
+
+
 func _show_page(page: String) -> void:
 	for k in pages.keys():
 		pages[k].visible = (k == page)
@@ -208,6 +234,12 @@ func _show_page(page: String) -> void:
 	tab_garden.button_pressed = page == "garden"
 	tab_shop.button_pressed = page == "shop"
 	tab_processing.button_pressed = page == "processing"
+	# ganti latar sesuai halaman
+	var tex_path := "res://assets/bg_%s.webp" % page
+	if ResourceLoader.exists(tex_path):
+		bg_texture.texture = load(tex_path)
+	else:
+		bg_texture.texture = null
 
 
 func _build_garden_page() -> Control:
@@ -275,7 +307,7 @@ func _build_garden_page() -> Control:
 	plot_bars.add_theme_constant_override("separation", 6)
 	vbox.add_child(plot_bars)
 
-	return scroll
+	return _page_backing(scroll)
 
 
 func _build_shop_page() -> Control:
@@ -349,7 +381,7 @@ func _build_shop_page() -> Control:
 	stock_rows.add_theme_constant_override("separation", 6)
 	vbox.add_child(stock_rows)
 
-	return scroll
+	return _page_backing(scroll)
 
 
 func _build_processing_page() -> Control:
@@ -403,7 +435,7 @@ func _build_processing_page() -> Control:
 	station_rows.add_theme_constant_override("separation", 6)
 	vbox.add_child(station_rows)
 
-	return scroll
+	return _page_backing(scroll)
 
 
 # ============ REFRESH ============
@@ -483,7 +515,14 @@ func _refresh() -> void:
 	for pid in Game.unlocked_products():
 		var n: int = int(Game.stock.get(pid, 0))
 		any_stock = any_stock or n > 0
-		stock_rows.add_child(_muted_row("%s  ·  %d ready" % [Game.TEA_PRODUCTS[pid]["name"], n]))
+		var row_text := "%s  ·  %d ready" % [Game.TEA_PRODUCTS[pid]["name"], n]
+		# stok tersedia terang, yang kosong redup biar beda status
+		if n > 0:
+			var bright := _muted_row(row_text)
+			bright.add_theme_color_override("font_color", COL_TEXT)
+			stock_rows.add_child(bright)
+		else:
+			stock_rows.add_child(_muted_row(row_text))
 	if not any_stock:
 		stock_rows.add_child(_muted_row("No tea ready to serve yet."))
 
