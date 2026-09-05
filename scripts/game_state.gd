@@ -58,6 +58,9 @@ const SHOP_LEVELS := {
 
 const XP_LEVELS := [0, 30, 80, 160]  # xp total minimum per level kedai
 
+# Durasi satu langkah stasiun (detik) untuk semua produk di M0.
+const STEP_SECONDS := 10.0
+
 # --- Data statis: pelanggan ---
 const CUSTOMER_NAMES := [
 	"Mira", "Tomas", "Aiko", "Bram", "Selin", "Oren", "Yuki", "Pak Darma",
@@ -179,6 +182,18 @@ func station_cost(station: String) -> float:
 	return base * pow(STATIONS[station]["growth"], station_counts[station])
 
 
+func buy_station(station: String) -> bool:
+	if not STATIONS.has(station):
+		return false
+	var cost := station_cost(station)
+	if coins < cost:
+		return false
+	coins -= cost
+	station_counts[station] = int(station_counts[station]) + 1
+	coins_changed.emit()
+	return true
+
+
 func can_start(product_id: String) -> bool:
 	if not unlocked_products().has(product_id):
 		return false
@@ -203,15 +218,15 @@ func start_product(product_id: String) -> bool:
 		coins -= press
 		coins_changed.emit()
 	stock_changed.emit()
-	for i in prod["chain"].size():
-		batch_counter += 1
-		var st: String = prod["chain"][i]
-		station_queues[st].append({
-			"id": batch_counter,
-			"product": product_id,
-			"step": i,
-			"done_at": _now() + 10.0 * (i + 1),
-		})
+	# Batch mulai di stasiun PERTAMA saja. Pindah stasiun terjadi saat
+	# langkah selesai (lihat _finish_step), bukan semua sekaligus.
+	batch_counter += 1
+	station_queues[prod["chain"][0]].append({
+		"id": batch_counter,
+		"product": product_id,
+		"step": 0,
+		"done_at": _now() + STEP_SECONDS,
+	})
 	return true
 
 
@@ -239,7 +254,10 @@ func _finish_step(item: Dictionary) -> void:
 			stock[item["product"]] = int(stock.get(item["product"], 0)) + 1
 			stock_changed.emit()
 	else:
-		var next_st: String = chain[int(item["step"]) + 1]
+		# langkah bukan terakhir: lanjut ke stasiun berikutnya, mulai sekarang
+		item["step"] = int(item["step"]) + 1
+		item["done_at"] = _now() + STEP_SECONDS
+		var next_st: String = chain[int(item["step"])]
 		station_queues[next_st].append(item)
 
 
