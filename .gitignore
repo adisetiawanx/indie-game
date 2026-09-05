@@ -3,3 +3,5 @@
 
 # Build output
 builds/
+.hermes-tmp*
+assets_raw/
