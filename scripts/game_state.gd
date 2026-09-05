@@ -1,7 +1,382 @@
 extends Node
 
-## Game state autoload. Ekonomi game hidup di sini, UI cuma pembaca.
+## Slow Leaf - state ekonomi game (autoload Game).
+## SEMUA angka dan aturan ekonomi hidup di sini. UI cuma pembaca.
+## Desain lengkap ada di GAME.md.
+
+signal coins_changed
+signal stock_changed
+signal xp_changed
+
+const SAVE_PATH := "user://save.json"
+const VERSION := "0.1.0-m0"
+
+# --- Data statis: tanaman (waktu dalam detik) ---
+const TEA_PLANTS := {
+	"green": {"name": "Green Tea", "grow_seconds": 45.0, "yield": 3},
+	"white": {"name": "White Tea", "grow_seconds": 120.0, "yield": 5},
+	"oolong": {"name": "Oolong", "grow_seconds": 300.0, "yield": 8},
+}
+
+# --- Data statis: produk teh ---
+# station = tempat mulai proses, steps = berapa stasiun dilewati berurutan.
+# Urutan stasiun mengikuti rantai: withering -> rolling -> oxidation -> dryer.
+const TEA_PRODUCTS := {
+	"green_tea": {
+		"name": "Green Tea", "plant": "green", "raw_cost": 3,
+		"chain": ["dryer"], "serve_price": 6, "xp": 1,
+	},
+	"white_tea": {
+		"name": "White Tea", "plant": "white", "raw_cost": 5,
+		"chain": ["withering", "dryer"], "serve_price": 14, "xp": 2,
+	},
+	"oolong_tea": {
+		"name": "Oolong Tea", "plant": "oolong", "raw_cost": 8,
+		"chain": ["withering", "rolling", "oxidation"], "serve_price": 30, "xp": 4,
+	},
+	"puer_cake": {
+		"name": "Pu-erh Cake", "plant": "oolong", "raw_cost": 8,
+		"press_cost": 10, "chain": ["withering", "rolling", "dryer"],
+		"serve_price": 40, "xp": 6,
+	},
+}
+
+# --- Data statis: stasiun ---
+const STATIONS := {
+	"withering": {"name": "Withering Rack", "base_cost": 25.0, "growth": 1.6},
+	"dryer": {"name": "Tea Dryer", "base_cost": 60.0, "growth": 1.6},
+	"rolling": {"name": "Rolling Table", "base_cost": 120.0, "growth": 1.6},
+	"oxidation": {"name": "Oxidation Tray", "base_cost": 250.0, "growth": 1.6},
+}
+
+# --- Level kedai: membuka resep dan stasiun ---
+const SHOP_LEVELS := {
+	1: {"xp": 0, "unlocks": ["green_tea", "white_tea"]},
+	2: {"xp": 30, "unlocks": ["oolong_tea", "rolling"]},
+	3: {"xp": 80, "unlocks": ["puer_cake", "oxidation"]},
+}
+
+const XP_LEVELS := [0, 30, 80, 160]  # xp total minimum per level kedai
+
+# --- Data statis: pelanggan ---
+const CUSTOMER_NAMES := [
+	"Mira", "Tomas", "Aiko", "Bram", "Selin", "Oren", "Yuki", "Pak Darma",
+	"Nyonya Lian", "Si Kecil Jun", "Pak Wayan", "Ibu Ratna",
+]
+
+# --- State dinamis ---
+var coins: float = 20.0
+var xp: int = 0
+var shop_level: int = 1
+var raw_leaves: int = 0
+
+var plots: Array = []            # [{plant, planted_at, ready_at}]
+var plot_price: float = 15.0
+var plot_growth: float = 1.5
+
+var station_counts := {"withering": 1, "dryer": 1, "rolling": 0, "oxidation": 0}
+var station_queues := {}         # station -> [{product, step_index, done_at}]
+var batch_counter: int = 0
+
+var stock := {}                  # product_id -> jumlah siap saji
+var aging := []                  # [{ready_at}] kue pu-erh yang sedang mengering
+var press_queue := []            # [{ready_at}] pressing di aging rack
+
+var customer: Dictionary = {}    # pelanggan aktif {name, product, reward, xp}
+var customer_cooldown: float = 0.0
+
+var stats_served: int = 0
+var stats_earned: float = 0.0
+
+
+func _ready() -> void:
+	for st in STATIONS.keys():
+		station_queues[st] = []
+
+
+# ============ LEVEL KEDAI ============
+
+func xp_for_level(level: int) -> int:
+	if level - 1 < XP_LEVELS.size():
+		return XP_LEVELS[level - 1]
+	return XP_LEVELS[XP_LEVELS.size() - 1] * (level - XP_LEVELS.size() + 1)
+
+
+func unlocked_products() -> Array:
+	var out := []
+	for pid in TEA_PRODUCTS.keys():
+		var lvl: int = _product_level(pid)
+		if lvl <= shop_level:
+			out.append(pid)
+	return out
+
+
+func _product_level(pid: String) -> int:
+	for lvl in SHOP_LEVELS.keys():
+		if pid in SHOP_LEVELS[lvl]["unlocks"]:
+			return lvl
+	return 1
+
+
+func check_level_up() -> void:
+	while shop_level < XP_LEVELS.size() and xp >= XP_LEVELS[shop_level]:
+		shop_level += 1
+
+
+# ============ KEBUN ============
+
+func plant_price() -> float:
+	return plot_price * pow(plot_growth, plots.size())
+
+
+func can_buy_plot() -> bool:
+	return coins >= plant_price()
+
+
+func buy_plot(plant_id: String) -> bool:
+	if not TEA_PLANTS.has(plant_id) or not can_buy_plot():
+		return false
+	coins -= plant_price()
+	var now: float = _now()
+	plots.append({
+		"plant": plant_id,
+		"planted_at": now,
+		"ready_at": now + float(TEA_PLANTS[plant_id]["grow_seconds"]),
+	})
+	coins_changed.emit()
+	return true
+
+
+func ready_plots() -> int:
+	var now: float = _now()
+	var n := 0
+	for p in plots:
+		if now >= float(p["ready_at"]):
+			n += 1
+	return n
+
+
+func harvest_all() -> int:
+	var now: float = _now()
+	var got := 0
+	var remaining := []
+	for p in plots:
+		if now >= float(p["ready_at"]):
+			got += int(TEA_PLANTS[p["plant"]]["yield"])
+		else:
+			remaining.append(p)
+	plots = remaining
+	if got > 0:
+		raw_leaves += got
+		stock_changed.emit()
+	return got
+
+
+# ============ PENGOLAHAN ============
+
+func station_cost(station: String) -> float:
+	var base: float = STATIONS[station]["base_cost"]
+	return base * pow(STATIONS[station]["growth"], station_counts[station])
+
+
+func can_start(product_id: String) -> bool:
+	if not unlocked_products().has(product_id):
+		return false
+	var prod: Dictionary = TEA_PRODUCTS[product_id]
+	var press: int = int(prod.get("press_cost", 0))
+	if raw_leaves < int(prod["raw_cost"]) or coins < press:
+		return false
+	# tiap stasiun di rantai harus punya slot antrian kosong
+	for st in prod["chain"]:
+		if station_queues[st].size() >= station_counts[st]:
+			return false
+	return true
+
+
+func start_product(product_id: String) -> bool:
+	if not can_start(product_id):
+		return false
+	var prod: Dictionary = TEA_PRODUCTS[product_id]
+	raw_leaves -= int(prod["raw_cost"])
+	var press: int = int(prod.get("press_cost", 0))
+	if press > 0:
+		coins -= press
+		coins_changed.emit()
+	stock_changed.emit()
+	for i in prod["chain"].size():
+		batch_counter += 1
+		var st: String = prod["chain"][i]
+		station_queues[st].append({
+			"id": batch_counter,
+			"product": product_id,
+			"step": i,
+			"done_at": _now() + 10.0 * (i + 1),
+		})
+	return true
+
+
+func poll_stations() -> void:
+	var now: float = _now()
+	for st in station_queues.keys():
+		var q: Array = station_queues[st]
+		var remaining := []
+		for item in q:
+			if now >= float(item["done_at"]):
+				_finish_step(item)
+			else:
+				remaining.append(item)
+		station_queues[st] = remaining
+
+
+func _finish_step(item: Dictionary) -> void:
+	var prod: Dictionary = TEA_PRODUCTS[item["product"]]
+	var chain: Array = prod["chain"]
+	if int(item["step"]) >= chain.size() - 1:
+		# langkah terakhir: kue pu-erh masuk rack pengering, lainnya ke stok
+		if item["product"] == "puer_cake":
+			aging.append({"ready_at": _now() + 60.0})
+		else:
+			stock[item["product"]] = int(stock.get(item["product"], 0)) + 1
+			stock_changed.emit()
+	else:
+		var next_st: String = chain[int(item["step"]) + 1]
+		station_queues[next_st].append(item)
+
+
+func aging_count() -> int:
+	return aging.size()
+
+
+func ready_cakes() -> int:
+	var now: float = _now()
+	var n := 0
+	for c in aging:
+		if now >= float(c["ready_at"]):
+			n += 1
+	return n
+
+
+func collect_cakes() -> int:
+	var now: float = _now()
+	var remaining := []
+	var got := 0
+	for c in aging:
+		if now >= float(c["ready_at"]):
+			got += 1
+			stock["puer_cake"] = int(stock.get("puer_cake", 0)) + 1
+		else:
+			remaining.append(c)
+	aging = remaining
+	if got > 0:
+		stock_changed.emit()
+	return got
+
+
+# ============ PENYAJIAN ============
+
+func maybe_spawn_customer(delta: float) -> void:
+	if not customer.is_empty():
+		return
+	customer_cooldown -= delta
+	if customer_cooldown > 0.0:
+		return
+	var avail := unlocked_products()
+	avail = avail.filter(func(pid): return int(stock.get(pid, 0)) > 0)
+	if avail.is_empty():
+		return
+	var pid: String = avail[randi() % avail.size()]
+	var prod: Dictionary = TEA_PRODUCTS[pid]
+	customer = {
+		"name": CUSTOMER_NAMES[randi() % CUSTOMER_NAMES.size()],
+		"product": pid,
+		"reward": float(prod["serve_price"]),
+		"xp": int(prod["xp"]),
+		"patience": 30.0,
+	}
+
+
+func serve_customer() -> bool:
+	if customer.is_empty():
+		return false
+	var pid: String = customer["product"]
+	if int(stock.get(pid, 0)) <= 0:
+		return false
+	stock[pid] = int(stock[pid]) - 1
+	coins += float(customer["reward"])
+	stats_earned += float(customer["reward"])
+	xp += int(customer["xp"])
+	stats_served += 1
+	customer = {}
+	customer_cooldown = 6.0
+	check_level_up()
+	coins_changed.emit()
+	stock_changed.emit()
+	xp_changed.emit()
+	return true
+
+
+# ============ UTIL ============
+
+func _now() -> float:
+	return Time.get_unix_time_from_system()
 
 
 func reset() -> void:
-	pass
+	coins = 20.0
+	xp = 0
+	shop_level = 1
+	raw_leaves = 0
+	plots = []
+	plot_price = 15.0
+	station_counts = {"withering": 1, "dryer": 1, "rolling": 0, "oxidation": 0}
+	for st in station_queues.keys():
+		station_queues[st] = []
+	stock = {}
+	aging = []
+	customer = {}
+	customer_cooldown = 0.0
+	stats_served = 0
+	stats_earned = 0.0
+
+
+func save() -> void:
+	var data := {
+		"version": VERSION,
+		"coins": coins, "xp": xp, "shop_level": shop_level,
+		"raw_leaves": raw_leaves, "plots": plots,
+		"plot_price": plot_price, "station_counts": station_counts,
+		"stock": stock, "aging": aging, "stats_served": stats_served,
+		"stats_earned": stats_earned,
+	}
+	var f := FileAccess.open(SAVE_PATH, FileAccess.WRITE)
+	if f == null:
+		push_warning("Gagal simpan save: %d" % FileAccess.get_open_error())
+		return
+	f.store_string(JSON.stringify(data))
+	f.close()
+
+
+func load_save() -> void:
+	if not FileAccess.file_exists(SAVE_PATH):
+		return
+	var f := FileAccess.open(SAVE_PATH, FileAccess.READ)
+	if f == null:
+		return
+	var parsed = JSON.parse_string(f.get_as_text())
+	f.close()
+	if not (parsed is Dictionary):
+		return
+	coins = float(parsed.get("coins", 20.0))
+	xp = int(parsed.get("xp", 0))
+	shop_level = int(parsed.get("shop_level", 1))
+	raw_leaves = int(parsed.get("raw_leaves", 0))
+	plots = parsed.get("plots", [])
+	plot_price = float(parsed.get("plot_price", 15.0))
+	var sc: Dictionary = parsed.get("station_counts", {})
+	for k in sc.keys():
+		if station_counts.has(k):
+			station_counts[k] = int(sc[k])
+	stock = parsed.get("stock", {})
+	aging = parsed.get("aging", [])
+	stats_served = int(parsed.get("stats_served", 0))
+	stats_earned = float(parsed.get("stats_earned", 0.0))
