@@ -19,6 +19,7 @@ var tab_garden: Button
 var tab_shop: Button
 var tab_processing: Button
 var tab_market: Button
+var tab_legacy: Button
 var pages: Dictionary = {}
 
 # garden page
@@ -43,6 +44,12 @@ var station_rows: VBoxContainer
 var market_label: Label
 var market_hint: Label
 var vintage_rows: VBoxContainer
+var prestige_button: Button
+var prestige_hint: Label
+
+# legacy page
+var legacy_points_label: Label
+var legacy_rows: VBoxContainer
 
 var status_label: Label
 var status_tween: Tween
@@ -156,12 +163,14 @@ func _build_ui() -> void:
 	tab_shop = _make_tab("Shop")
 	tab_processing = _make_tab("Processing")
 	tab_market = _make_tab("Market")
-	for b in [tab_garden, tab_shop, tab_processing, tab_market]:
+	tab_legacy = _make_tab("Legacy")
+	for b in [tab_garden, tab_shop, tab_processing, tab_market, tab_legacy]:
 		tabbar.add_child(b)
 	tab_garden.pressed.connect(func(): _show_page("garden"))
 	tab_shop.pressed.connect(func(): _show_page("shop"))
 	tab_processing.pressed.connect(func(): _show_page("processing"))
 	tab_market.pressed.connect(func(): _show_page("market"))
+	tab_legacy.pressed.connect(func(): _show_page("legacy"))
 
 	# --- halaman ---
 	var page_holder := MarginContainer.new()
@@ -176,6 +185,7 @@ func _build_ui() -> void:
 	pages["shop"] = _build_shop_page()
 	pages["processing"] = _build_processing_page()
 	pages["market"] = _build_market_page()
+	pages["legacy"] = _build_legacy_page()
 	for k in pages.keys():
 		page_holder.add_child(pages[k])
 		pages[k].visible = false
@@ -244,9 +254,10 @@ func _show_page(page: String) -> void:
 	tab_shop.button_pressed = page == "shop"
 	tab_processing.button_pressed = page == "processing"
 	tab_market.button_pressed = page == "market"
-	# ganti latar sesuai halaman (market pakai latar banner lembah teh)
+	tab_legacy.button_pressed = page == "legacy"
+	# ganti latar sesuai halaman (market & legacy pakai latar lembah teh)
 	var tex_path := "res://assets/bg_%s.webp" % page
-	if page == "market":
+	if page == "market" or page == "legacy":
 		tex_path = "res://assets/banner.webp"
 	if ResourceLoader.exists(tex_path):
 		bg_texture.texture = load(tex_path)
@@ -500,6 +511,86 @@ func _build_market_page() -> Control:
 	vintage_rows.add_theme_constant_override("separation", 8)
 	vbox.add_child(vintage_rows)
 
+	vbox.add_child(_spacer(10))
+
+	# blok prestige: tutup generasi ini, wariskan kedai
+	var gen_panel := PanelContainer.new()
+	var gp_style := _box(COL_SURFACE, 12)
+	gp_style.content_margin_left = 18.0
+	gp_style.content_margin_right = 18.0
+	gp_style.content_margin_top = 12.0
+	gp_style.content_margin_bottom = 12.0
+	gen_panel.add_theme_stylebox_override("panel", gp_style)
+	vbox.add_child(gen_panel)
+	var gp_v := VBoxContainer.new()
+	gp_v.add_theme_constant_override("separation", 6)
+	gen_panel.add_child(gp_v)
+
+	var gp_title := Label.new()
+	gp_title.text = "Pass the tea house on"
+	gp_title.add_theme_font_size_override("font_size", 16)
+	gp_title.add_theme_color_override("font_color", COL_ACCENT)
+	gp_v.add_child(gp_title)
+
+	prestige_hint = Label.new()
+	prestige_hint.add_theme_font_size_override("font_size", 13)
+	prestige_hint.add_theme_color_override("font_color", COL_MUTED)
+	prestige_hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	gp_v.add_child(prestige_hint)
+
+	prestige_button = Button.new()
+	prestige_button.add_theme_font_size_override("font_size", 15)
+	prestige_button.add_theme_color_override("font_color", Color("1a120c"))
+	prestige_button.add_theme_color_override("font_hover_color", Color("1a120c"))
+	prestige_button.add_theme_color_override("font_pressed_color", Color("1a120c"))
+	prestige_button.add_theme_color_override("font_disabled_color", COL_MUTED)
+	prestige_button.add_theme_stylebox_override("normal", _box(COL_ACCENT, 10))
+	prestige_button.add_theme_stylebox_override("hover", _box(COL_ACCENT_HOVER, 10))
+	var pr_btn := _box(COL_ACCENT_PRESS, 10)
+	prestige_button.add_theme_stylebox_override("pressed", pr_btn)
+	prestige_button.add_theme_stylebox_override("hover_pressed", pr_btn)
+	var dis2 := _box(COL_SURFACE_2, 10)
+	prestige_button.add_theme_stylebox_override("disabled", dis2)
+	prestige_button.pressed.connect(_on_advance_generation)
+	gp_v.add_child(prestige_button)
+
+	return _page_backing(scroll)
+
+
+func _build_legacy_page() -> Control:
+	var scroll := ScrollContainer.new()
+	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	var vbox := VBoxContainer.new()
+	vbox.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	vbox.add_theme_constant_override("separation", 10)
+	scroll.add_child(vbox)
+
+	var h := Label.new()
+	h.text = "Legacy"
+	h.add_theme_font_size_override("font_size", 26)
+	h.add_theme_color_override("font_color", COL_TEXT)
+	vbox.add_child(h)
+
+	legacy_points_label = Label.new()
+	legacy_points_label.add_theme_font_size_override("font_size", 14)
+	legacy_points_label.add_theme_color_override("font_color", COL_MUTED)
+	vbox.add_child(legacy_points_label)
+
+	var hint := Label.new()
+	hint.text = (
+		"Every generation that runs the tea house earns legacy points from "
+		+ "the coins it made. Spend them on permanent gifts for all future "
+		+ "generations. Aging cakes and these talents survive every handover."
+	)
+	hint.add_theme_font_size_override("font_size", 13)
+	hint.add_theme_color_override("font_color", COL_MUTED)
+	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	vbox.add_child(hint)
+
+	legacy_rows = VBoxContainer.new()
+	legacy_rows.add_theme_constant_override("separation", 8)
+	vbox.add_child(legacy_rows)
+
 	return _page_backing(scroll)
 
 
@@ -507,7 +598,9 @@ func _build_market_page() -> Control:
 
 func _refresh() -> void:
 	var plural := "" if Game.plots.size() == 1 else "s"
-	coins_label.text = "%d coins  ·  Shop level %d" % [int(Game.coins), Game.shop_level]
+	coins_label.text = "Gen %d  ·  %d coins  ·  Shop level %d" % [
+		Game.generation, int(Game.coins), Game.shop_level,
+	]
 
 	# garden
 	for pid in plant_buttons.keys():
@@ -715,6 +808,59 @@ func _refresh() -> void:
 		row2.add_child(sell)
 		vintage_rows.add_child(row2)
 
+	# blok prestige
+	var pending: int = Game.pending_legacy_points()
+	prestige_hint.text = (
+		"Generation %d has earned %d coins, worth %d legacy point%s. "
+		+ "Handing over the house restarts the garden, stock and shop level, "
+		+ "but aging cakes and legacy talents are kept by the family."
+	) % [
+		Game.generation, int(Game.stats_earned), pending,
+		"" if pending == 1 else "s",
+	]
+	prestige_button.text = "Hand over  ·  +%d point%s" % [pending, "" if pending == 1 else "s"]
+	prestige_button.disabled = pending < 1
+
+	# legacy page
+	legacy_points_label.text = "Generation %d  ·  %d legacy point%s available" % [
+		Game.generation, Game.legacy_points, "" if Game.legacy_points == 1 else "s",
+	]
+	_clear_children(legacy_rows)
+	for tid in Game.LEGACY_TREE.keys():
+		var t: Dictionary = Game.LEGACY_TREE[tid]
+		var lvl := Game.legacy_level(tid)
+		var max_lvl := int(t["max"])
+		var row3 := HBoxContainer.new()
+		row3.add_theme_constant_override("separation", 10)
+		var tlbl := Label.new()
+		tlbl.add_theme_font_size_override("font_size", 14)
+		var dots := ""
+		for i in max_lvl:
+			dots += "●" if i < lvl else "○"
+		tlbl.text = "%s  %s  ·  %s" % [t["name"], dots, t["desc"]]
+		if lvl >= max_lvl:
+			tlbl.add_theme_color_override("font_color", COL_SUCCESS)
+		elif lvl > 0:
+			tlbl.add_theme_color_override("font_color", COL_ACCENT)
+		else:
+			tlbl.add_theme_color_override("font_color", COL_MUTED)
+		row3.add_child(tlbl)
+		var spacer4 := Control.new()
+		spacer4.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		row3.add_child(spacer4)
+		var tbuy := Button.new()
+		if lvl >= max_lvl:
+			tbuy.text = "Mastered"
+			tbuy.disabled = true
+		else:
+			var cost := Game.legacy_cost(tid)
+			tbuy.text = "Learn  ·  %d pt" % cost
+			tbuy.disabled = Game.legacy_points < cost
+		tbuy.add_theme_font_size_override("font_size", 13)
+		tbuy.pressed.connect(_on_buy_legacy.bind(tid))
+		row3.add_child(tbuy)
+		legacy_rows.add_child(row3)
+
 
 func _human_age(seconds: float) -> String:
 	if seconds < 90.0:
@@ -783,6 +929,24 @@ func _on_sell_cake(index: int) -> void:
 	var price := Game.puer_price(float(Game.vintage[index]["finished_at"]))
 	if Game.sell_cake(index):
 		_flash("Cake sold for %d coins." % int(price))
+
+
+func _on_advance_generation() -> void:
+	var pts: int = Game.pending_legacy_points()
+	if pts < 1:
+		return
+	var kept_cakes: int = Game.vintage.size()
+	if Game.advance_generation():
+		_flash(
+			"Generation %d begins. +%d legacy points, %d cakes kept aging."
+			% [Game.generation, pts, kept_cakes]
+		)
+		_show_page("legacy")
+
+
+func _on_buy_legacy(tid: String) -> void:
+	if Game.buy_legacy(tid):
+		_flash("%s learned." % Game.LEGACY_TREE[tid]["name"])
 
 
 func _on_serve() -> void:
@@ -951,6 +1115,39 @@ func _run_selftest() -> void:
 	fails += _check(Game.coins > coins_pre_sell, "selling credits coins")
 	fails += _check(Game.vintage.is_empty(), "vintage empty after selling")
 
+	# --- prestige generasi + talenta warisan ---
+	Game.stats_earned = 250.0
+	fails += _check(Game.pending_legacy_points() == 2, "250 earned = 2 legacy points")
+	fails += _check(not Game.buy_legacy("green_thumb"), "buy legacy fails without points")
+	Game.legacy_points = 1
+	fails += _check(Game.buy_legacy("green_thumb"), "buy legacy with 1 point")
+	fails += _check(Game.legacy_cost("green_thumb") == 2, "second level costs 2 (growth x2)")
+	fails += _check(absf(Game.grow_seconds_for("green") - 45.0) < 0.01, "patient soil not applied yet")
+	Game.legacy["patient_soil"] = 2
+	fails += _check(absf(Game.grow_seconds_for("green") - 36.0) < 0.01, "patient soil lvl2 = 20% faster")
+	Game.legacy["nimble_hands"] = 1
+	fails += _check(absf(Game.step_seconds() - 9.0) < 0.01, "nimble hands lvl1 = 10% faster steps")
+	Game.legacy["green_thumb"] = 1
+	Game.plots = [{"plant": "green", "planted_at": 0.0, "ready_at": 0.0}]
+	fails += _check(Game.harvest_all() == 4, "green thumb lvl1 adds +1 leaf (3+1)")
+	Game.legacy["merchants_nose"] = 2
+	var base_price := Game.puer_price(Game._now())
+	Game.legacy["merchants_nose"] = 0
+	fails += _check(absf(base_price / Game.puer_price(Game._now()) - 1.10) < 0.001,
+		"merchants nose lvl2 = +10% price")
+	# advance: vintage + talenta kekal, ekonomi reset
+	Game.legacy_points = 5
+	Game.vintage = [{"finished_at": Game._now() - 100.0}]
+	Game.stats_earned = 300.0
+	fails += _check(Game.advance_generation(), "advance generation with 3 points pending")
+	fails += _check(Game.generation == 2, "generation incremented")
+	fails += _check(Game.legacy_points == 8, "points banked (5 + 3)")
+	fails += _check(Game.vintage.size() == 1, "vintage survives generation handover")
+	fails += _check(Game.legacy["green_thumb"] == 1, "talents survive handover")
+	fails += _check(Game.coins == 20.0 and Game.shop_level == 1 and Game.plots.is_empty(),
+		"economy reset on handover")
+	fails += _check(Game.pending_legacy_points() == 0, "new generation earns fresh")
+
 	# --- pelanggan ---
 	Game.stock = {"green_tea": 2}  # stok tunggal biar pilihan pelanggan deterministik
 	Game.customer = {}
@@ -1008,8 +1205,14 @@ func _run_screenshot() -> void:
 		{"finished_at": Game._now() - 120.0},
 		{"finished_at": Game._now() - (604800.0 + 3600.0)},
 	]
+	# contoh legacy utk screenshot
+	Game.generation = 2
+	Game.legacy_points = 4
+	Game.stats_earned = 460.0
+	Game.legacy["green_thumb"] = 1
+	Game.legacy["patient_soil"] = 2
 	var out_dir := ProjectSettings.globalize_path("user://")
-	for entry in [["garden", "garden"], ["shop", "shop"], ["processing", "processing"], ["market", "market"]]:
+	for entry in [["garden", "garden"], ["shop", "shop"], ["processing", "processing"], ["market", "market"], ["legacy", "legacy"]]:
 		_show_page(entry[0])
 		_refresh()
 		await get_tree().process_frame

@@ -106,6 +106,33 @@ var customer_cooldown: float = 0.0
 var stats_served: int = 0
 var stats_earned: float = 0.0
 
+# --- Prestige: Generasi (lihat GAME.md) ---
+# Talanta permanen: tiap level mengubah MEKANIK, bukan sekadar angka besar.
+const LEGACY_TREE := {
+	"green_thumb": {"name": "Green Thumb", "branch": "Garden", "max": 3,
+		"base_cost": 1, "cost_growth": 2, "desc": "+1 leaf from every harvest"},
+	"patient_soil": {"name": "Patient Soil", "branch": "Garden", "max": 3,
+		"base_cost": 1, "cost_growth": 2, "desc": "Tea grows 10% faster"},
+	"nimble_hands": {"name": "Nimble Hands", "branch": "Workshop", "max": 3,
+		"base_cost": 1, "cost_growth": 2, "desc": "Station steps 10% faster"},
+	"frugal_builder": {"name": "Frugal Builder", "branch": "Workshop", "max": 2,
+		"base_cost": 2, "cost_growth": 3, "desc": "New stations 15% cheaper"},
+	"warm_welcome": {"name": "Warm Welcome", "branch": "Shop", "max": 3,
+		"base_cost": 1, "cost_growth": 2, "desc": "Customers wait 25% longer"},
+	"small_charms": {"name": "Small Charms", "branch": "Shop", "max": 3,
+		"base_cost": 1, "cost_growth": 2, "desc": "Customers arrive 20% sooner"},
+	"merchants_nose": {"name": "Merchant's Nose", "branch": "Market", "max": 3,
+		"base_cost": 2, "cost_growth": 2, "desc": "Cake prices +5%"},
+	"deep_cellar": {"name": "Deep Cellar", "branch": "Market", "max": 2,
+		"base_cost": 3, "cost_growth": 3, "desc": "Cakes dry on the rack 30% faster"},
+}
+# Poin warisan diberikan per koin penghasilan generasi ini.
+const LEGACY_POINTS_PER := 100.0
+
+var generation: int = 1
+var legacy_points: int = 0
+var legacy := {}                 # id talenta -> level
+
 # Skala waktu utk playtest: --dev-speed membuat 1 detik nyata = 300 detik game
 # (5 menit game per detik), supaya tier aging berhari-hari terasa dalam satu
 # sesi: Aged 3 hari = ~9 menit main, Reserve 7 hari = ~21 menit.
@@ -172,7 +199,7 @@ func buy_plot(plant_id: String) -> bool:
 	plots.append({
 		"plant": plant_id,
 		"planted_at": now,
-		"ready_at": now + float(TEA_PLANTS[plant_id]["grow_seconds"]),
+		"ready_at": now + grow_seconds_for(plant_id),
 	})
 	coins_changed.emit()
 	return true
@@ -190,10 +217,11 @@ func ready_plots() -> int:
 func harvest_all() -> int:
 	var now: float = _now()
 	var got := 0
+	var bonus := legacy_level("green_thumb")
 	var remaining := []
 	for p in plots:
 		if now >= float(p["ready_at"]):
-			got += int(TEA_PLANTS[p["plant"]]["yield"])
+			got += int(TEA_PLANTS[p["plant"]]["yield"]) + bonus
 		else:
 			remaining.append(p)
 	plots = remaining
@@ -207,7 +235,9 @@ func harvest_all() -> int:
 
 func station_cost(station: String) -> float:
 	var base: float = STATIONS[station]["base_cost"]
-	return base * pow(STATIONS[station]["growth"], station_counts[station])
+	var raw := base * pow(STATIONS[station]["growth"], station_counts[station])
+	# Frugal Builder: diskon pembelian stasiun baru
+	return raw * pow(0.85, float(legacy_level("frugal_builder")))
 
 
 func buy_station(station: String) -> bool:
@@ -253,7 +283,7 @@ func start_product(product_id: String) -> bool:
 		"id": batch_counter,
 		"product": product_id,
 		"step": 0,
-		"done_at": _now() + STEP_SECONDS,
+		"done_at": _now() + step_seconds(),
 	})
 	return true
 
@@ -277,14 +307,14 @@ func _finish_step(item: Dictionary) -> void:
 	if int(item["step"]) >= chain.size() - 1:
 		# langkah terakhir: kue pu-erh masuk rack pengering, lainnya ke stok
 		if item["product"] == "puer_cake":
-			aging.append({"ready_at": _now() + 60.0})
+			aging.append({"ready_at": _now() + rack_seconds()})
 		else:
 			stock[item["product"]] = int(stock.get(item["product"], 0)) + 1
 			stock_changed.emit()
 	else:
 		# langkah bukan terakhir: lanjut ke stasiun berikutnya, mulai sekarang
 		item["step"] = int(item["step"]) + 1
-		item["done_at"] = _now() + STEP_SECONDS
+		item["done_at"] = _now() + step_seconds()
 		var next_st: String = chain[int(item["step"])]
 		station_queues[next_st].append(item)
 
@@ -373,7 +403,9 @@ func cake_age_seconds(finished_at: float) -> float:
 
 func puer_price(finished_at: float) -> float:
 	var info := age_info(cake_age_seconds(finished_at))
-	return PUER_BASE_PRICE * float(info["mult"]) * market_mult()
+	var price: float = PUER_BASE_PRICE * float(info["mult"]) * market_mult()
+	# Merchant's Nose: harga kue lebih tinggi
+	return price * (1.0 + 0.05 * float(legacy_level("merchants_nose")))
 
 
 func vintage_count() -> int:
@@ -411,7 +443,7 @@ func maybe_spawn_customer(delta: float) -> void:
 		"product": pid,
 		"reward": float(prod["serve_price"]),
 		"xp": int(prod["xp"]),
-		"patience": 30.0,
+		"patience": patience_seconds(),
 	}
 
 
@@ -427,11 +459,88 @@ func serve_customer() -> bool:
 	xp += int(customer["xp"])
 	stats_served += 1
 	customer = {}
-	customer_cooldown = 6.0
+	customer_cooldown = respawn_cooldown()
 	check_level_up()
 	coins_changed.emit()
 	stock_changed.emit()
 	xp_changed.emit()
+	return true
+
+
+# ============ PRESTIGE: GENERASI ============
+
+func legacy_level(id: String) -> int:
+	return int(legacy.get(id, 0))
+
+
+func legacy_cost(id: String) -> int:
+	var t: Dictionary = LEGACY_TREE[id]
+	return int(t["base_cost"]) * int(pow(float(t["cost_growth"]), legacy_level(id)))
+
+
+func buy_legacy(id: String) -> bool:
+	if not LEGACY_TREE.has(id):
+		return false
+	var t: Dictionary = LEGACY_TREE[id]
+	if legacy_level(id) >= int(t["max"]):
+		return false
+	var cost := legacy_cost(id)
+	if legacy_points < cost:
+		return false
+	legacy_points -= cost
+	legacy[id] = legacy_level(id) + 1
+	return true
+
+
+## Efek talenta sebagai fungsi kecil, dipakai mekanik di seluruh game.
+func grow_seconds_for(plant_id: String) -> float:
+	var base := float(TEA_PLANTS[plant_id]["grow_seconds"])
+	return base * (1.0 - 0.10 * float(legacy_level("patient_soil")))
+
+
+func step_seconds() -> float:
+	return STEP_SECONDS * (1.0 - 0.10 * float(legacy_level("nimble_hands")))
+
+
+func rack_seconds() -> float:
+	return 60.0 * (1.0 - 0.30 * float(legacy_level("deep_cellar")))
+
+
+func patience_seconds() -> float:
+	return 30.0 * (1.0 + 0.25 * float(legacy_level("warm_welcome")))
+
+
+func respawn_cooldown() -> float:
+	return 6.0 * (1.0 - 0.20 * float(legacy_level("small_charms")))
+
+
+## Poin yang akan diberikan bila generasi ini ditutup.
+func pending_legacy_points() -> int:
+	return int(stats_earned / LEGACY_POINTS_PER)
+
+
+func advance_generation() -> bool:
+	var pts := pending_legacy_points()
+	if pts < 1:
+		return false
+	generation += 1
+	legacy_points += pts
+	# reset ekonomi harian; vintage dan talenta TIDAK ikut reset
+	coins = 20.0
+	xp = 0
+	shop_level = 1
+	raw_leaves = 0
+	plots = []
+	plot_price = 15.0
+	station_counts = {"withering": 1, "dryer": 1, "rolling": 0, "oxidation": 0}
+	for st in station_queues.keys():
+		station_queues[st] = []
+	stock = {}
+	aging = []
+	customer = {}
+	customer_cooldown = 0.0
+	stats_served = 0
+	stats_earned = 0.0
 	return true
 
 
@@ -458,6 +567,9 @@ func reset() -> void:
 	customer_cooldown = 0.0
 	stats_served = 0
 	stats_earned = 0.0
+	generation = 1
+	legacy_points = 0
+	legacy = {}
 
 
 func save() -> void:
@@ -469,6 +581,8 @@ func save() -> void:
 		"stock": stock, "aging": aging, "vintage": vintage,
 		"stats_served": stats_served,
 		"stats_earned": stats_earned,
+		"generation": generation, "legacy_points": legacy_points,
+		"legacy": legacy,
 	}
 	var f := FileAccess.open(SAVE_PATH, FileAccess.WRITE)
 	if f == null:
@@ -503,3 +617,9 @@ func load_save() -> void:
 	vintage = parsed.get("vintage", [])
 	stats_served = int(parsed.get("stats_served", 0))
 	stats_earned = float(parsed.get("stats_earned", 0.0))
+	generation = int(parsed.get("generation", 1))
+	legacy_points = int(parsed.get("legacy_points", 0))
+	var lg: Dictionary = parsed.get("legacy", {})
+	for k in lg.keys():
+		if LEGACY_TREE.has(k):
+			legacy[k] = int(lg[k])
