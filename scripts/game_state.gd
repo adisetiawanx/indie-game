@@ -106,10 +106,23 @@ var customer_cooldown: float = 0.0
 var stats_served: int = 0
 var stats_earned: float = 0.0
 
+# Skala waktu utk playtest: --dev-speed membuat 1 detik nyata = 300 detik game
+# (5 menit game per detik), supaya tier aging berhari-hari terasa dalam satu
+# sesi: Aged 3 hari = ~9 menit main, Reserve 7 hari = ~21 menit.
+var time_scale := 1.0
+var virtual_offset := 0.0
+
 
 func _ready() -> void:
 	for st in STATIONS.keys():
 		station_queues[st] = []
+	if OS.get_cmdline_user_args().has("--dev-speed"):
+		time_scale = 300.0
+
+
+func _process(delta: float) -> void:
+	if time_scale != 1.0:
+		virtual_offset += delta * (time_scale - 1.0)
 
 
 # ============ LEVEL KEDAI ============
@@ -327,9 +340,9 @@ func market_direction() -> String:
 func market_mult_at(unix_seconds: float) -> float:
 	var hours: float = unix_seconds / 3600.0
 	var wave: float = (
-		0.35 * sin(hours * 0.26)
-		+ 0.22 * sin(hours * 0.83 + 1.7)
-		+ 0.13 * sin(hours * 2.1 + 4.2)
+		0.30 * sin(hours * 0.26)
+		+ 0.20 * sin(hours * 0.83 + 1.7)
+		+ 0.15 * sin(hours * 8.0 + 4.2)
 	)
 	var t: float = (wave + 0.7) / 1.4
 	return MARKET_MIN + t * (MARKET_MAX - MARKET_MIN)
@@ -425,7 +438,7 @@ func serve_customer() -> bool:
 # ============ UTIL ============
 
 func _now() -> float:
-	return Time.get_unix_time_from_system()
+	return Time.get_unix_time_from_system() + virtual_offset
 
 
 func reset() -> void:
